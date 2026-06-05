@@ -135,6 +135,19 @@ THEMES = {
 THEME = {"name": "ฟ้า", **THEMES["ฟ้า"]}
 THINK_ON = False  # /think: ให้โมเดล local reason ก่อนตอบ (ช้าลงแต่ฉลาดขึ้น)
 MAX_TOOL_ROUNDS = 25  # กันลูป agentic ไม่จบ (โมเดลเรียก tool ซ้ำไม่หยุด)
+LONGDOC_CHARS = 150_000  # ~40-50k token — เกินนี้ถือเป็น request วิเคราะห์เอกสารยาว
+
+
+def longdoc_options(messages: list) -> dict:
+    """กัน failure mode ของ context ยาว (เทสต์จริง @190k, 2026-06-06): เอกสารยาว
+    ทำโมเดลวน loop ตอน generate และจับคู่ข้อมูลข้าม context ผิดตัว — repeat_penalty 1.3
+    แก้ทั้งสองอาการ (multi-hop 0/2 → 2/2), num_predict กัน gen ไม่จบ.
+    ใส่เฉพาะ request ยาวเท่านั้น: penalty สูงแบบ global จะทำ codegen ปกติเพี้ยน
+    (ลงโทษ token ที่ต้องซ้ำ เช่นชื่อตัวแปร/indent)"""
+    chars = sum(len(str(m.get("content") or "")) for m in messages)
+    if chars < LONGDOC_CHARS:
+        return {}
+    return {"repeat_penalty": 1.3, "num_predict": 4096}
 
 
 def apply_theme(name: str) -> None:
@@ -1398,8 +1411,11 @@ class LocalBackend:
             }
             if THINK_ON and self.supports_think:
                 payload["think"] = True  # /think เปิด → โมเดล reason ก่อน (spinner หมุนระหว่างคิด)
+            opts = longdoc_options(messages)
             if self.num_ctx:
-                payload["options"] = {"num_ctx": self.num_ctx}
+                opts["num_ctx"] = self.num_ctx
+            if opts:
+                payload["options"] = opts
 
             content = ""
             calls: list = []
