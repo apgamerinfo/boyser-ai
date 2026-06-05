@@ -2,6 +2,8 @@
 
 CLI coding agent สไตล์ Claude Code — รันบนเครื่องตัวเอง ใช้ได้ทั้ง **Claude API**, **Cloud API** (OpenRouter / Groq / DeepSeek / OpenAI / Together / Gemini) และ**โมเดล local ฟรี** (Ollama / llama.cpp)
 
+![BOYSER AI screenshot](assets/screenshot.png)
+
 ทั้งโปรเจกต์อยู่ในไฟล์เดียว `agent.py` (~1900 บรรทัด) — อ่านง่าย แก้ง่าย
 
 ## ฟีเจอร์
