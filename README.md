@@ -38,7 +38,9 @@ boyser-ai --local --model qwen3-coder       # บังคับ local ชั่
 boyser-ai --yolo                            # ไม่ถามยืนยัน tool
 ```
 
-ใน REPL: พิมพ์ `/` ดูเมนูคำสั่ง (`/help /clear /model /ctx /theme /skills /memory /save /tools /status /statusline /think /yolo /exit`) · `exit` ออก
+ใน REPL: พิมพ์ `/` ดูเมนูคำสั่ง (`/help /clear /model /ctx /theme /skills /memory /save /tools /status /statusline /think /update /yolo /exit`) · `exit` ออก
+
+มีเวอร์ชันใหม่บน GitHub เมื่อไหร่ โปรแกรมจะแจ้งเตือนตอนเปิด — พิมพ์ `/update` เพื่ออัปเดตได้เลย
 
 ตั้งค่าเก็บที่ `~/.config/boyser-ai/` (config.json, memory.md, skills/, history)
 
