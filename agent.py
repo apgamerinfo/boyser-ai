@@ -696,6 +696,42 @@ class Interrupt:
         _active_interrupt = None
 
 
+def hard_close(resp) -> None:
+    """ปิด httpx response แบบ shutdown socket — ปลุก recv ที่ block อยู่ได้จริง
+    (resp.close() เฉยๆ ไม่ปลุก recv ที่ค้าง: ทดสอบแล้ว block ต่อจน server ส่งข้อมูล)"""
+    import socket as _socket
+
+    try:
+        ns = resp.extensions.get("network_stream")
+        s = ns.get_extra_info("socket") if ns else None
+        if s:
+            s.shutdown(_socket.SHUT_RDWR)
+    except Exception:
+        pass
+    try:
+        resp.close()
+    except Exception:
+        pass
+
+
+def esc_watch(intr, close_fn) -> threading.Event:
+    """เฝ้า ESC ระหว่าง stream block รอ token แรก (โหลดโมเดล/prompt eval) — กดแล้วปิด stream
+    ให้ iter หลุดจากการ block ทันที; คืน Event ให้ caller .set() ตอนจบ stream เพื่อเลิกเฝ้า"""
+    done = threading.Event()
+    if intr:
+        def run():
+            while not done.wait(0.1):
+                if intr.stopped():
+                    try:
+                        close_fn()
+                    except Exception:
+                        pass
+                    return
+
+        threading.Thread(target=run, daemon=True).start()
+    return done
+
+
 SESSION = {"in": 0, "out": 0, "cached": 0, "turns": 0, "started": 0.0, "rem_tokens": None, "reset_tokens": None}
 _status_ctx: dict = {"backend": None, "on": False}
 
@@ -1261,11 +1297,18 @@ class ClaudeBackend:
             results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    output = execute_tool(block.name, block.input)
+                    # ESC ระหว่าง tool → ข้ามตัวที่เหลือ แต่ใส่ tool_result ครบทุก id (กัน API 400 รอบถัดไป)
+                    if intr and intr.stopped():
+                        output = "(หยุดโดยผู้ใช้ด้วย ESC)"
+                    else:
+                        output = execute_tool(block.name, block.input)
                     results.append(
                         {"type": "tool_result", "tool_use_id": block.id, "content": output}
                     )
             messages.append({"role": "user", "content": results})
+            if intr and intr.stopped():
+                console.print("[dim]⊘ หยุดแล้ว (ESC)[/]")
+                return
 
 
 class LocalBackend:
@@ -1339,8 +1382,10 @@ class LocalBackend:
             usage = None
             live = None
             think = Thinking()
+            watch = threading.Event()
             try:
                 with httpx.stream("POST", f"{self.api_base}/api/chat", json=payload, timeout=None) as r:
+                    watch = esc_watch(intr, lambda: hard_close(r))  # ESC ตอนรอ token แรก → ปลุกให้หลุด block
                     try:
                         rem_tok, reset_tok = extract_rate_limits(r.headers)
                         if rem_tok:
@@ -1372,7 +1417,11 @@ class LocalBackend:
                             calls.append({"name": fn.get("name", ""), "args": fn.get("arguments", {})})
                         if o.get("done"):
                             usage = (o.get("prompt_eval_count", 0), o.get("eval_count", 0))
+            except Exception:
+                if not (intr and intr.stopped()):
+                    raise  # error จริง — ไม่ใช่ esc_watch ปิด stream เพราะ ESC
             finally:
+                watch.set()
                 if think:
                     think.stop()
                 if live:
@@ -1410,9 +1459,15 @@ class LocalBackend:
             prev_sig = sig
 
             for c in calls:
-                args = c["args"] if isinstance(c["args"], dict) else json.loads(c["args"] or "{}")
-                output = execute_tool(c["name"], args)
+                if intr and intr.stopped():  # ESC ระหว่าง tool → ข้ามตัวที่เหลือ แต่ใส่ผลครบให้ประวัติ valid
+                    output = "(หยุดโดยผู้ใช้ด้วย ESC)"
+                else:
+                    args = c["args"] if isinstance(c["args"], dict) else json.loads(c["args"] or "{}")
+                    output = execute_tool(c["name"], args)
                 messages.append({"role": "tool", "tool_name": c["name"], "content": output})
+            if intr and intr.stopped():
+                console.print("[dim]⊘ หยุดแล้ว (ESC)[/]")
+                return
 
     def turn(self, messages: list, intr=None) -> None:
         if self.is_ollama:
@@ -1446,6 +1501,7 @@ class LocalBackend:
             usage = None
             live = None
             think = Thinking()
+            watch = esc_watch(intr, lambda: hard_close(stream.response))  # ESC ตอนรอ token แรก → ปลุกให้หลุด block
             try:
                 for chunk in stream:
                     if intr and intr.stopped():
@@ -1475,7 +1531,11 @@ class LocalBackend:
                             if tc.function:
                                 e["name"] += tc.function.name or ""
                                 e["args"] += tc.function.arguments or ""
+            except Exception:
+                if not (intr and intr.stopped()):
+                    raise  # error จริง — ไม่ใช่ esc_watch ปิด stream เพราะ ESC
             finally:
+                watch.set()
                 if think:
                     think.stop()
                 if live:
@@ -1516,15 +1576,21 @@ class LocalBackend:
                 return
 
             for i, c in enumerate(calls):
-                try:
-                    args = json.loads(c["args"] or "{}")
-                except json.JSONDecodeError:
-                    output = "Error: invalid JSON in tool arguments."
+                if intr and intr.stopped():  # ESC ระหว่าง tool → ข้ามตัวที่เหลือ แต่ใส่ผลครบให้ประวัติ valid
+                    output = "(หยุดโดยผู้ใช้ด้วย ESC)"
                 else:
-                    output = execute_tool(c["name"], args)
+                    try:
+                        args = json.loads(c["args"] or "{}")
+                    except json.JSONDecodeError:
+                        output = "Error: invalid JSON in tool arguments."
+                    else:
+                        output = execute_tool(c["name"], args)
                 messages.append(
                     {"role": "tool", "tool_call_id": c["id"] or f"call_{i}", "content": output}
                 )
+            if intr and intr.stopped():
+                console.print("[dim]⊘ หยุดแล้ว (ESC)[/]")
+                return
 
 
 def make_backend(cfg: dict):
