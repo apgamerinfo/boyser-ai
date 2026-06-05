@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-06-06
+- ถอน repeat_penalty ออกจากโหมดเอกสารยาว (เหลือแค่ num_predict cap) — เทสซ้ำทั้งชุดพบผลไม่นิ่ง: บางเอกสารช่วย multi-hop บางเอกสารไม่ช่วย แถมทำ recall รายการยาวพัง (9/10 → 0/10)
 - แก้ crash เมื่อโมเดลส่ง todos เป็น list ของ string (ไม่ใช่ dict) — todo_write ห่อเป็น dict ให้เอง (เจอจากเทสเอกสารยาวจริง: โมเดลตอบเสร็จแล้วเรียก todo_write format เพี้ยน ทำทั้ง turn พัง)
 - ฉลาดขึ้นกับเอกสารยาว: request ที่ context เกิน ~150k ตัวอักษรจะใส่ `repeat_penalty 1.3` + `num_predict 4096` ให้อัตโนมัติ (Ollama) — แก้อาการวน loop ตอน generate และจับคู่ข้อมูลข้าม context ผิดตัว (พิสูจน์ด้วย stress test จริงที่ 190k token: multi-hop 0/2 → 2/2) โดยไม่กระทบ codegen ปกติ
 
