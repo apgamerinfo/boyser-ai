@@ -29,6 +29,22 @@ boyser-ai          # ครั้งแรกจะมี wizard เลือก
 
 ใช้โมเดล local ฟรี: ติดตั้ง [Ollama](https://ollama.com) แล้ว `ollama pull qwen3-coder` (หรือโมเดลอื่นที่รองรับ tools)
 
+### ใช้ GPU เครื่องอื่นในวง LAN
+
+มีเครื่องแรงอยู่เครื่องเดียว? ให้เครื่องนั้นเปิด Ollama รับ LAN:
+
+```bash
+sudo sh -c 'mkdir -p /etc/systemd/system/ollama.service.d && printf "[Service]\nEnvironment=\"OLLAMA_HOST=0.0.0.0\"\n" > /etc/systemd/system/ollama.service.d/lan.conf && systemctl daemon-reload && systemctl restart ollama'
+```
+
+แล้วเครื่องอื่นชี้ไปหา: ตอน wizard เลือก Ollama ใส่ IP เครื่องนั้น (เช่น `192.168.1.10`) หรือสั่งตรง
+
+```bash
+boyser-ai --local http://192.168.1.10:11434/v1 --model qwen3-coder
+```
+
+⚠️ เปิดแล้วทุกเครื่องในวง LAN เรียกโมเดลได้โดยไม่มีรหัสผ่าน — ใช้เฉพาะวงที่ไว้ใจได้
+
 ## ใช้งาน
 
 ```bash

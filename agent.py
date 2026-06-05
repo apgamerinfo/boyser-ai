@@ -556,13 +556,22 @@ def setup_wizard() -> dict:
         cfg = {"backend": "local", "base_url": base, "model": model, "api_key": key}
 
     elif backend == "Ollama":
-        models = list_ollama_models(OLLAMA_URL)
+        url = ask_text("Ollama อยู่ที่ไหน (Enter = เครื่องนี้ / ใส่ IP เครื่องอื่นในวง LAN เช่น 192.168.1.10):",
+                       default=OLLAMA_URL)
+        # ใส่แค่ IP/hostname ได้ — เติม scheme/port//v1 ให้เอง
+        if "://" not in url:
+            url = "http://" + url
+        if ":" not in url.split("://", 1)[1]:
+            url += ":11434"
+        if not url.rstrip("/").endswith("/v1"):
+            url = url.rstrip("/") + "/v1"
+        models = list_ollama_models(url)
         if models:
             model = menu_select("เลือกโมเดล (จาก ollama list):", [(m, "") for m in models])
         else:
-            console.print(f"[yellow]ต่อ Ollama ที่ {OLLAMA_URL} ไม่ได้ — พิมพ์ชื่อโมเดลเอง[/]")
+            console.print(f"[yellow]ต่อ Ollama ที่ {url} ไม่ได้ — พิมพ์ชื่อโมเดลเอง[/]")
             model = ask_text("ชื่อโมเดล:", default="qwen3-coder-tools")
-        cfg = {"backend": "local", "base_url": OLLAMA_URL, "model": model, "num_ctx": ask_ctx()}
+        cfg = {"backend": "local", "base_url": url, "model": model, "num_ctx": ask_ctx()}
 
     else:  # llama.cpp
         url = ask_text("URL ของ llama-server:", default=LLAMACPP_URL)
