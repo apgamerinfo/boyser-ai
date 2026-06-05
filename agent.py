@@ -1135,6 +1135,8 @@ def render_todos(todos: list) -> None:
 
 def todo_write(todos: list) -> str:
     global CURRENT_TODOS
+    # โมเดล local บางตัวส่ง todos เป็น list ของ string (ไม่ใช่ dict) → ห่อให้ก่อน กัน .get() crash ทั้ง turn
+    todos = [t if isinstance(t, dict) else {"task": str(t), "status": "pending"} for t in (todos or [])]
     CURRENT_TODOS = todos
     render_todos(todos)
     done = sum(1 for t in todos if t.get("status") == "done")
