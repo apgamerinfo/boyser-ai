@@ -580,6 +580,10 @@ def setup_wizard() -> dict:
         cfg = {"backend": "local", "base_url": url, "model": model, "num_ctx": ask_ctx()}
 
     cfg["theme"] = menu_select("เลือกธีมสี:", [(n, "") for n in THEMES])
+    old = load_config() or {}
+    for k in ("think", "statusline"):  # ค่าที่ wizard ไม่ได้ถาม — คงไว้จาก config เดิม
+        if k in old:
+            cfg[k] = old[k]
     save_config(cfg)
     console.print(f"[green]✓ บันทึกที่ {CONFIG_PATH}[/]\n")
     return cfg
