@@ -27,6 +27,9 @@ sh install.sh
 boyser-ai          # ครั้งแรกจะมี wizard เลือก backend/โมเดล
 ```
 
+**Windows:** รัน `install.bat` แทน `sh install.sh` (ที่เหลือเหมือนกัน — ติดตั้งเสร็จให้เปิดเทอร์มินัลใหม่ก่อนใช้ครั้งแรก)
+แนะนำให้ลง [Git for Windows](https://git-scm.com/download/win) ด้วย — tool `bash` จะใช้ Git Bash อัตโนมัติ (คำสั่ง bash ที่โมเดลเขียนใช้ได้เลย) ถ้าไม่มีจะ fallback เป็น cmd.exe
+
 ใช้โมเดล local ฟรี: ติดตั้ง [Ollama](https://ollama.com) แล้ว `ollama pull qwen3-coder` (หรือโมเดลอื่นที่รองรับ tools)
 
 ### ใช้ GPU เครื่องอื่นในวง LAN

@@ -15,6 +15,7 @@ import html as htmllib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -110,6 +111,29 @@ SKILLS_DIRS = [os.path.join(WORKDIR, ".boyser", "skills"), os.path.join(CONFIG_D
 SKILLS: dict = {}  # name -> {path, dir, description}
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))  # โฟลเดอร์ที่ clone มา (ใช้เช็ค/ดึงอัปเดต)
 UPDATE_AVAILABLE = threading.Event()  # ตั้งโดย background check → main loop โชว์เตือนครั้งเดียว
+IS_WIN = os.name == "nt"
+
+
+def _find_git_bash() -> str | None:
+    """หา bash.exe ของ Git for Windows — จงใจไม่ใช้ which("bash") เพราะบน Windows
+    มักได้ System32\\bash.exe (WSL) ซึ่งเป็นคนละ filesystem"""
+    git = shutil.which("git")
+    candidates = []
+    if git:  # ปกติ git.exe อยู่ <root>\cmd\git.exe → bash อยู่ <root>\bin\bash.exe
+        root = os.path.dirname(os.path.dirname(git))
+        candidates.append(os.path.join(root, "bin", "bash.exe"))
+    for env in ("ProgramFiles", "ProgramFiles(x86)", "LocalAppData"):
+        base = os.environ.get(env)
+        if base:
+            candidates.append(os.path.join(base, "Git", "bin", "bash.exe"))
+            candidates.append(os.path.join(base, "Programs", "Git", "bin", "bash.exe"))
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+GIT_BASH = _find_git_bash() if IS_WIN else None
 
 
 def _load_logo() -> str:
@@ -218,9 +242,18 @@ _THAI_DAYS = ["วันจันทร์", "วันอังคาร", "ว
 _now = datetime.datetime.now()
 TODAY = f"{_now.strftime('%A %Y-%m-%d')} ({_THAI_DAYS[_now.weekday()]})"
 
+if IS_WIN:
+    _SHELL_NOTE = (
+        "\nThis machine runs Windows. Shell commands execute under "
+        + ("Git Bash — bash syntax (ls, grep, pipes) works." if GIT_BASH
+           else "cmd.exe — write Windows commands (dir, type, set), NOT bash syntax.")
+    )
+else:
+    _SHELL_NOTE = ""
+
 SYSTEM = f"""You are BOYSER AI, a helpful coding agent running on the user's local machine.
 Working directory: {WORKDIR}
-Current date: {TODAY} (run `date` via bash if you need the exact time)
+Current date: {TODAY} (run `date` via bash if you need the exact time){_SHELL_NOTE}
 
 Use your tools to complete tasks:
 - bash: run shell commands (git, install, run scripts)
@@ -746,17 +779,21 @@ class Interrupt:
     def __enter__(self):
         global _active_interrupt
         if sys.stdin.isatty():
-            import termios
-            import tty
-
-            try:
-                self._fd = sys.stdin.fileno()
-                self._old = termios.tcgetattr(self._fd)
-                tty.setcbreak(self._fd)  # อ่านทีละปุ่มโดยไม่ต้องกด Enter
-                self._thread = threading.Thread(target=self._run, daemon=True)
+            if IS_WIN:  # Windows: msvcrt อ่านปุ่มจาก console ได้เลย ไม่ต้องสลับโหมด terminal
+                self._thread = threading.Thread(target=self._run_win, daemon=True)
                 self._thread.start()
-            except Exception:
-                self._old = None
+            else:
+                import termios
+                import tty
+
+                try:
+                    self._fd = sys.stdin.fileno()
+                    self._old = termios.tcgetattr(self._fd)
+                    tty.setcbreak(self._fd)  # อ่านทีละปุ่มโดยไม่ต้องกด Enter
+                    self._thread = threading.Thread(target=self._run, daemon=True)
+                    self._thread.start()
+                except Exception:
+                    self._old = None
         _active_interrupt = self
         return self
 
@@ -774,31 +811,44 @@ class Interrupt:
                     self.event.set()
                     return
 
+    def _run_win(self):
+        import msvcrt
+
+        while not self._stop.is_set():
+            if self._paused.is_set() or not msvcrt.kbhit():
+                time.sleep(0.05)
+                continue
+            if msvcrt.getwch() == "\x1b":  # ESC
+                self.event.set()
+                return
+
     def stopped(self) -> bool:
         return self.event.is_set()
 
     def pause(self):
         """หยุดอ่านปุ่ม + คืนโหมด terminal ปกติ เพื่อให้ input() (ถาม y/n) ใช้ได้"""
-        if self._old is None or not self._thread:
+        if not self._thread:
             return
         self._paused.set()
-        import termios
+        if self._old is not None:  # POSIX เท่านั้นที่ต้องคืนโหมด terminal
+            import termios
 
-        try:
-            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
-        except Exception:
-            pass
-        time.sleep(0.06)  # ให้ reader หลุดจาก select รอบปัจจุบันก่อน input()
+            try:
+                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
+            except Exception:
+                pass
+        time.sleep(0.06)  # ให้ reader หลุดจาก select/kbhit รอบปัจจุบันก่อน input()
 
     def resume(self):
-        if self._old is None or not self._thread:
+        if not self._thread:
             return
-        import tty
+        if self._old is not None:
+            import tty
 
-        try:
-            tty.setcbreak(self._fd)
-        except Exception:
-            pass
+            try:
+                tty.setcbreak(self._fd)
+            except Exception:
+                pass
         self._paused.clear()
 
     def __exit__(self, *a):
@@ -1010,16 +1060,25 @@ def show_diff(path: str, old_text: str, new_text: str) -> None:
 def run_bash(command: str) -> str:
     if not confirm("bash"):
         return "Error: user denied this command."
-    import signal
+    common = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=WORKDIR)
+    if IS_WIN:
+        if GIT_BASH:  # มี Git Bash → คำสั่ง bash ที่โมเดลเขียนใช้ได้เลย
+            p = subprocess.Popen([GIT_BASH, "-c", command], **common)
+        else:  # ไม่มี → cmd.exe (system prompt บอกโมเดลให้เขียนคำสั่ง Windows แล้ว)
+            p = subprocess.Popen(command, shell=True, **common)
+    else:
+        import signal
 
-    p = subprocess.Popen(
-        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, cwd=WORKDIR, start_new_session=True,  # group ใหม่ → ฆ่าลูกหลานได้หมด
-    )
+        p = subprocess.Popen(
+            command, shell=True, start_new_session=True, **common,  # group ใหม่ → ฆ่าลูกหลานได้หมด
+        )
 
     def kill():
         try:
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            if IS_WIN:  # taskkill /T ฆ่าทั้ง tree (เทียบเท่า killpg)
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
+            else:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
         except Exception:
             pass
         try:
@@ -1098,14 +1157,52 @@ def glob_tool(pattern: str) -> str:
         matches = globlib.glob(pattern, recursive=True)
     except Exception as e:
         return f"Error: {e}"
-    matches = [m for m in matches if "/.venv/" not in m and "/.git/" not in m]
+    matches = [m for m in matches
+               if "/.venv/" not in (n := m.replace(os.sep, "/")) and "/.git/" not in n]
     matches.sort(key=lambda m: os.path.getmtime(m) if os.path.exists(m) else 0, reverse=True)
     if not matches:
         return "(no files matched)"
     return "\n".join(matches[:100])
 
 
+def _grep_py(pattern: str, path: str) -> str:
+    """grep สำรองภาษา Python ล้วน — ใช้ตอนเครื่องไม่มี grep binary (Windows ที่ไม่มี Git Bash)"""
+    try:
+        rx = re.compile(pattern)
+    except re.error as e:
+        return f"Error: invalid pattern: {e}"
+    skip = {".git", ".venv", "node_modules", "__pycache__"}
+    out: list[str] = []
+    deadline = time.monotonic() + 30
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if d not in skip]
+        for fn in files:
+            if time.monotonic() > deadline:
+                return "\n".join(out) if out else "Error: grep timed out."
+            fp = os.path.join(root, fn)
+            try:
+                with open(fp, "rb") as f:
+                    head = f.read(1024)
+                if b"\0" in head:  # binary → ข้าม (เทียบเท่า grep -I)
+                    continue
+                hits = 0
+                with open(fp, encoding="utf-8", errors="replace") as f:
+                    for i, line in enumerate(f, 1):
+                        if rx.search(line):
+                            out.append(f"{fp}:{i}:{line.rstrip()}")
+                            hits += 1
+                            if hits >= 5 or len(out) >= 100:
+                                break
+            except OSError:
+                continue
+            if len(out) >= 100:
+                return "\n".join(out)
+    return "\n".join(out) if out else "(no matches)"
+
+
 def grep_tool(pattern: str, path: str = ".") -> str:
+    if shutil.which("grep") is None:
+        return _grep_py(pattern, path)
     cmd = [
         "grep", "-rn", "-I", "-E", "-m", "5",
         "--exclude-dir=.git", "--exclude-dir=.venv", "--exclude-dir=node_modules",
@@ -1338,7 +1435,7 @@ def edit_memory() -> None:
     os.makedirs(CONFIG_DIR, exist_ok=True)
     if not os.path.exists(MEMORY_FILE):
         open(MEMORY_FILE, "a").close()
-    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or ("notepad" if IS_WIN else "nano")
     try:
         subprocess.call([editor, MEMORY_FILE])
     except Exception as e:
@@ -2175,8 +2272,6 @@ def main() -> None:
                           f"{'เปิด — เอกสารยาวจะถามซ้ำ 3 รอบหา consensus' if VOTE_ON else 'ปิด'}[/]")
             continue
         if user == "/update":
-            import shutil
-
             if not os.path.isdir(os.path.join(REPO_DIR, ".git")):
                 console.print("[yellow]ติดตั้งแบบไม่มี git — อัปเดตด้วยการ clone repo ใหม่[/]")
                 continue
