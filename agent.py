@@ -1970,7 +1970,7 @@ def main() -> None:
         if loaded:
             rows.append(("loaded", ", ".join(loaded)))
         for k, v in rows:
-            details.append(f"{k:<7}", style="dim")
+            details.append(f"{k:<9}", style="dim")  # 9 > "version" (7) — กัน label ติดค่า
             details.append(v + "\n")
         details.append("พิมพ์ ", style="dim")
         details.append("/", style=f"bold {accent}")
