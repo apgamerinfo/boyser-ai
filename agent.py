@@ -1783,6 +1783,50 @@ SLASH_COMMANDS = {
 }
 
 
+_FILE_SCAN = {"t": 0.0, "files": []}
+_SCAN_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".cache", "dist", "build"}
+
+
+def scan_files(limit: int = 2000) -> list:
+    """รายชื่อไฟล์ใต้ cwd สำหรับ @ autocomplete (ข้าม dir ขยะ/ซ่อน) — cache 5 วิ"""
+    if time.time() - _FILE_SCAN["t"] < 5:
+        return _FILE_SCAN["files"]
+    out = []
+    for dirpath, dirnames, filenames in os.walk("."):
+        dirnames[:] = sorted(d for d in dirnames if d not in _SCAN_SKIP and not d.startswith("."))
+        for f in sorted(filenames):
+            if f.startswith("."):
+                continue
+            out.append(os.path.join(dirpath, f)[2:])  # ตัด ./ หน้า path
+            if len(out) >= limit:
+                break
+        if len(out) >= limit:
+            break
+    _FILE_SCAN.update(t=time.time(), files=out)
+    return out
+
+
+_MENTION_RE = re.compile(r"@([\w./+~-]+)", re.UNICODE)
+
+
+def expand_file_mentions(text: str):
+    """แปลง @path ที่เป็นไฟล์จริงเป็นเนื้อไฟล์แนบท้ายข้อความ → (ข้อความส่งโมเดล, [ไฟล์ที่แนบ])"""
+    attached, parts = [], [text]
+    for m in _MENTION_RE.finditer(text):
+        p = m.group(1).rstrip(".")  # กัน "@a.py." ท้ายประโยค
+        if p in attached or not os.path.isfile(p):
+            continue
+        try:
+            data = open(p, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        if len(data) > 100_000:
+            data = data[:100_000] + "\n... (ไฟล์ยาว ตัดที่ 100k ตัวอักษร — ใช้ tool อ่านส่วนที่เหลือ)"
+        attached.append(p)
+        parts.append(f"\n--- เนื้อไฟล์ {p} (user แนบด้วย @) ---\n{data}\n--- จบไฟล์ {p} ---")
+    return "\n".join(parts), attached
+
+
 def make_prompt():
     """ช่องพิมพ์แบบกล่องมีกรอบ (เหมือน Claude Code): ❯ ในกรอบ + เมนู / เด้ง + hint ล่าง
     ไม่มี TTY → ใช้ input() ธรรมดา"""
@@ -1806,6 +1850,18 @@ def make_prompt():
                 for cmd, desc in SLASH_COMMANDS.items():
                     if cmd.startswith(text):
                         yield Completion(cmd, start_position=-len(text), display=cmd, display_meta=desc)
+                return
+            # @ไฟล์ (แนบเนื้อไฟล์) หรือ ./path (เติม path เฉยๆ) → เด้งรายชื่อไฟล์ใน cwd
+            m = re.search(r"(@|\./)([\w./+~-]*)$", text, re.UNICODE)
+            if not m:
+                return
+            prefix = "@" if m.group(1) == "@" else ""
+            q = m.group(2).lower()
+            hits = [p for p in scan_files() if q in p.lower()]
+            # ไฟล์ที่ชื่อ (basename) ขึ้นต้นด้วยคำค้นมาก่อน แล้วค่อยเรียงตาม path สั้น
+            hits.sort(key=lambda p: (not os.path.basename(p).lower().startswith(q.rsplit("/", 1)[-1]), len(p)))
+            for p in hits[:50]:
+                yield Completion(prefix + p, start_position=-len(m.group(0)), display=p)
 
     os.makedirs(CONFIG_DIR, exist_ok=True)
     state = {"label": ""}
@@ -1841,7 +1897,7 @@ def make_prompt():
     def hint():
         if state.get("sl"):
             return [("class:hint", f"  {state['sl']}  ·  / · ESC หยุด")]
-        return [("class:hint", f"  {state['label']}  ·  พิมพ์ / ดูคำสั่ง · ESC หยุด · Ctrl+C ออก")]
+        return [("class:hint", f"  {state['label']}  ·  / คำสั่ง · @ แนบไฟล์ · ESC หยุด · Ctrl+C ออก")]
 
     root = FloatContainer(
         content=HSplit([Frame(ta), Window(FormattedTextControl(hint), height=1)]),
@@ -2192,7 +2248,10 @@ def main() -> None:
             console.print("[yellow]ไม่รู้จักคำสั่งนี้ — พิมพ์ /help[/]")
             continue
 
-        messages.append({"role": "user", "content": user})
+        expanded, attached = expand_file_mentions(user)
+        if attached:
+            console.print(f"[dim]📎 แนบไฟล์: {', '.join(attached)}[/]")
+        messages.append({"role": "user", "content": expanded})
         SESSION["turns"] += 1
         try:
             with Interrupt() as intr:  # กด ESC ระหว่างตอบ = หยุด
