@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-06-06
+- ใช้ Ollama นอกบ้านผ่านโดเมน/auth proxy ได้: wizard Ollama ถาม API key (optional) + native path แนบ Authorization ทุก call (probe/chat/vote/list) — คู่กับ auth proxy + Cloudflare Tunnel ฝั่ง server
 - โชว์เวอร์ชันบนหน้า CLI: banner + /status แสดง `v<n> (<hash> · <วันที่>)` คำนวณจาก git อัตโนมัติ — /update แล้วเลขขยับเอง (ติดตั้งแบบไม่มี git จะซ่อนบรรทัดนี้)
 - ใหม่: `/vote` — เอกสารยาว (>150k ตัวอักษร) ถามซ้ำ 3 รอบอัตโนมัติแล้วหา consensus (รอบ 2-3 แทบฟรีเพราะ KV cache) — แก้อาการโมเดล local ตอบไม่นิ่งบน context ยาวแม้ temp 0 (เทสพบเงื่อนไขเดิมเป๊ะให้คนละคำตอบ/บางทีติด loop); ตรงกันหมดใช้เลย ไม่ตรงให้โมเดลตัดสินเสียงข้างมาก; เปิดเป็น default ปิดได้ด้วย /vote
 - ถอน repeat_penalty ออกจากโหมดเอกสารยาว (เหลือแค่ num_predict cap) — เทสซ้ำทั้งชุดพบผลไม่นิ่ง: บางเอกสารช่วย multi-hop บางเอกสารไม่ช่วย แถมทำ recall รายการยาวพัง (9/10 → 0/10)

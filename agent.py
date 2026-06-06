@@ -168,7 +168,8 @@ def vote_consensus(backend, messages, first: str, intr=None) -> str | None:
         try:
             r = httpx.post(f"{backend.api_base}/api/chat",
                            json={"model": backend.model, "messages": base,
-                                 "stream": False, "options": opts}, timeout=None)
+                                 "stream": False, "options": opts}, timeout=None,
+                           headers=getattr(backend, "headers", {}))
             ans = strip_special(r.json().get("message", {}).get("content", ""))
             # รอบซ้ำอาจขอเรียก tool แทนการตอบ (history มี tool round) → ข้าม ไม่นับเป็นคำตอบ
             if ans.strip() and not looks_toolish(ans):
@@ -192,7 +193,8 @@ def vote_consensus(backend, messages, first: str, intr=None) -> str | None:
         r = httpx.post(f"{backend.api_base}/api/chat",
                        json={"model": backend.model,
                              "messages": [{"role": "user", "content": arb}],
-                             "stream": False, "options": opts}, timeout=None)
+                             "stream": False, "options": opts}, timeout=None,
+                       headers=getattr(backend, "headers", {}))
         final = strip_special(r.json().get("message", {}).get("content", ""))
     except Exception:
         return None
@@ -498,9 +500,10 @@ def build_system(base: str) -> tuple[str, list[str]]:
     return "\n".join(parts), loaded
 
 
-def list_ollama_models(base_url: str) -> list[str]:
+def list_ollama_models(base_url: str, api_key: str = "") -> list[str]:
     try:
-        r = httpx.get(base_url.replace("/v1", "/api/tags"), timeout=3)
+        hdr = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        r = httpx.get(base_url.replace("/v1", "/api/tags"), timeout=3, headers=hdr)
         return [m["name"] for m in r.json().get("models", [])]
     except Exception:
         return []
@@ -631,13 +634,17 @@ def setup_wizard() -> dict:
             url += ":11434"
         if not url.rstrip("/").endswith("/v1"):
             url = url.rstrip("/") + "/v1"
-        models = list_ollama_models(url)
+        # ต่อผ่าน auth proxy/โดเมน (เช่น Cloudflare Tunnel หน้า Ollama) → ใส่ key; LAN เปล่าๆ Enter ข้าม
+        key = ask_text("API key (ถ้าต่อผ่าน proxy/โดเมนที่ล็อก key — Enter = ไม่มี):", password=True)
+        models = list_ollama_models(url, key)
         if models:
             model = menu_select("เลือกโมเดล (จาก ollama list):", [(m, "") for m in models])
         else:
             console.print(f"[yellow]ต่อ Ollama ที่ {url} ไม่ได้ — พิมพ์ชื่อโมเดลเอง[/]")
             model = ask_text("ชื่อโมเดล:", default="qwen3-coder-tools")
         cfg = {"backend": "local", "base_url": url, "model": model, "num_ctx": ask_ctx()}
+        if key:
+            cfg["api_key"] = key
 
     else:  # llama.cpp
         url = ask_text("URL ของ llama-server:", default=LLAMACPP_URL)
@@ -1446,13 +1453,16 @@ class LocalBackend:
             self.api_base = self.api_base[:-3].rstrip("/")
         self.is_ollama = False
         self.supports_think = False
+        # Ollama หลัง auth proxy (เช่น Cloudflare Tunnel + Bearer key) → แนบ header ทุก call native
+        self.headers = {"Authorization": f"Bearer {cfg['api_key']}"} if cfg.get("api_key") else {}
         try:
-            r = httpx.get(self.api_base + "/api/version", timeout=2)
+            r = httpx.get(self.api_base + "/api/version", timeout=5, headers=self.headers)
             # ต้องเป็น Ollama จริง (status 200 + มี field version) — กัน cloud API ที่ตอบ 404 เฉยๆ
             if r.status_code == 200 and "version" in r.json():
                 self.is_ollama = True
                 caps = httpx.post(
-                    self.api_base + "/api/show", json={"model": self.model}, timeout=5
+                    self.api_base + "/api/show", json={"model": self.model}, timeout=5,
+                    headers=self.headers,
                 ).json().get("capabilities", [])
                 self.supports_think = "thinking" in caps  # /think ส่ง think:true เฉพาะตัวที่รองรับ
         except Exception:
@@ -1495,7 +1505,8 @@ class LocalBackend:
             think = Thinking()
             watch = threading.Event()
             try:
-                with httpx.stream("POST", f"{self.api_base}/api/chat", json=payload, timeout=None) as r:
+                with httpx.stream("POST", f"{self.api_base}/api/chat", json=payload, timeout=None,
+                                  headers=self.headers) as r:
                     watch = esc_watch(intr, lambda: hard_close(r))  # ESC ตอนรอ token แรก → ปลุกให้หลุด block
                     try:
                         rem_tok, reset_tok = extract_rate_limits(r.headers)
